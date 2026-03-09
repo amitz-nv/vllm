@@ -1168,6 +1168,9 @@ class FusedMoEConfig:
     # kernel is free to use inplace or not.
     disable_inplace: bool = True
 
+    # Optional model layer index for profiling/debugging.
+    layer_id: int | None = None
+
     def __post_init__(self):
         if self.dp_size > 1:
             logger.debug_once(

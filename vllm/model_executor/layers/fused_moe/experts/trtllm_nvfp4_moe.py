@@ -47,6 +47,7 @@ class TrtLlmNvFp4ExpertsBase:
         self.hidden_dim = moe_config.hidden_dim
         self.local_num_experts = moe_config.num_local_experts
         self.ep_rank = moe_config.moe_parallel_config.ep_rank
+        self.layer_id = moe_config.layer_id
 
         assert self.quant_config.g1_alphas is not None
         assert self.quant_config.a2_gscale is not None
@@ -206,6 +207,7 @@ class TrtLlmNvFp4ExpertsModular(TrtLlmNvFp4ExpertsBase, mk.FusedMoEExpertsModula
             do_finalize=True,
             activation_type=activation_to_flashinfer_int(activation),
             output=output,
+            layer_id=self.layer_id,
         )
 
 
@@ -324,4 +326,5 @@ class TrtLlmNvFp4ExpertsMonolithic(
             routing_method_type=self.routing_method_type,
             do_finalize=True,
             activation_type=activation_to_flashinfer_int(activation),
+            layer_id=self.layer_id,
         )[0]
