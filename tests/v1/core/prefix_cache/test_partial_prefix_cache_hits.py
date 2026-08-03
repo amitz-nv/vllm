@@ -77,6 +77,148 @@ def test_mamba_align_split_partial_tail_schedule():
     assert split(self=mock, request=req2, num_new_tokens=1000) == 512
 
 
+def test_mamba_align_split_preserves_fine_shared_prefix_junction():
+    """A hash-aligned shared junction stays fine when fine matching is on."""
+    block_size = 8
+    hash_block_size = 2
+    mock = SimpleNamespace(
+        cache_config=SimpleNamespace(block_size=block_size),
+        max_num_scheduled_tokens=block_size,
+        scheduler_config=SimpleNamespace(long_prefill_token_threshold=0),
+        use_eagle=False,
+        hash_block_size=hash_block_size,
+        mamba_partial_cache_hit=True,
+    )
+    req = make_request("fine-split", [0] * 12, hash_block_size, sha256)
+    req.num_computed_tokens = 0
+    req.shared_prefix_boundary = 6
+
+    split = Scheduler._mamba_block_aligned_split
+    assert split(self=mock, request=req, num_new_tokens=8) == 6
+
+    # Coarse mode and non-hash-aligned junctions retain the block-floored
+    # behavior.
+    mock.mamba_partial_cache_hit = False
+    assert split(self=mock, request=req, num_new_tokens=8) == 8
+    mock.mamba_partial_cache_hit = True
+    req.shared_prefix_boundary = 5
+    assert split(self=mock, request=req, num_new_tokens=8) == 8
+
+
+def test_hybrid_mamba_caches_fine_shared_prefix_junction():
+    """A fine shared junction is cached by Mamba and becomes reusable."""
+    hash_block_size = 2
+    mamba_block_size = 2 * hash_block_size
+    kv_cache_config = KVCacheConfig(
+        num_blocks=24,
+        kv_cache_tensors=[],
+        kv_cache_groups=[
+            KVCacheGroupSpec(
+                ["full"],
+                FullAttentionSpec(
+                    block_size=hash_block_size,
+                    num_kv_heads=1,
+                    head_size=1,
+                    dtype=torch.float32,
+                ),
+            ),
+            KVCacheGroupSpec(
+                ["mamba"],
+                MambaSpec(
+                    block_size=mamba_block_size,
+                    shapes=(1, 1),
+                    dtypes=(torch.float32,),
+                    mamba_cache_mode="align",
+                ),
+            ),
+        ],
+    )
+    manager = make_kv_cache_manager(
+        kv_cache_config=kv_cache_config,
+        max_model_len=8192,
+        enable_caching=True,
+        hash_block_size=hash_block_size,
+    )
+
+    tokens = [0, 0, 1, 1, 2, 2, 3, 3]
+    owner = make_request("fine-owner", tokens, hash_block_size, sha256)
+    owner.shared_prefix_boundary = 6
+    computed_blocks, num_computed, _ = manager.get_computed_blocks(owner)
+    assert num_computed == 0
+    assert manager.allocate_slots(owner, 6, 0, computed_blocks) is not None
+
+    fine_hash = owner.block_hashes[6 // hash_block_size - 1]
+    fine_mamba_block = manager.block_pool.get_cached_block(
+        fine_hash, kv_cache_group_ids=[1]
+    )
+    assert fine_mamba_block is not None
+    assert fine_mamba_block[0].block_hash_num_tokens == 6
+
+    manager.free(owner)
+    manager.new_step_starts()
+    consumer = make_request("fine-consumer", tokens, hash_block_size, sha256)
+    _, num_computed, _ = manager.get_computed_blocks(consumer)
+    assert num_computed == 6
+
+
+def test_full_attention_indexes_interior_prompt_hashes():
+    """Fine lookup can discover a shared prefix ending inside a cached block."""
+    hash_block_size = 2
+    block_size = 4
+    kv_cache_config = KVCacheConfig(
+        num_blocks=16,
+        kv_cache_tensors=[],
+        kv_cache_groups=[
+            KVCacheGroupSpec(
+                ["full"],
+                FullAttentionSpec(
+                    block_size=block_size,
+                    num_kv_heads=1,
+                    head_size=1,
+                    dtype=torch.float32,
+                ),
+            ),
+            KVCacheGroupSpec(
+                ["mamba"],
+                MambaSpec(
+                    block_size=block_size,
+                    shapes=(1, 1),
+                    dtypes=(torch.float32,),
+                    mamba_cache_mode="align",
+                ),
+            ),
+        ],
+    )
+    manager = make_kv_cache_manager(
+        kv_cache_config=kv_cache_config,
+        max_model_len=8192,
+        enable_caching=True,
+        hash_block_size=hash_block_size,
+    )
+
+    owner = make_request(
+        "fine-full-owner",
+        [0, 0, 1, 1, 2, 2, 3, 3],
+        hash_block_size,
+        sha256,
+    )
+    computed_blocks, num_computed, _ = manager.get_computed_blocks(owner)
+    assert manager.allocate_slots(owner, 8, num_computed, computed_blocks) is not None
+    manager.free(owner)
+    manager.new_step_starts()
+
+    consumer = make_request(
+        "fine-full-consumer",
+        [0, 0, 1, 1, 2, 2, 9, 9],
+        hash_block_size,
+        sha256,
+    )
+    _, hit_lengths = manager.coordinator.find_longest_cache_hit_per_group(
+        consumer.block_hashes, 7
+    )
+    assert hit_lengths == (6, 0)
+
+
 def test_mamba_align_split_when_block_exceeds_scheduling_budget():
     """Sub-block chunks make progress only when no step can fit a full block."""
     block_size = 11392
