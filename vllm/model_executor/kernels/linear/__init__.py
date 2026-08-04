@@ -18,6 +18,7 @@ from typing import TypeVar
 import torch
 
 import vllm.envs as envs
+from vllm.config.kernel import LinearQuantization
 from vllm.logger import init_logger
 from vllm.model_executor.kernels.linear.base import (
     MMLinearKernel,
@@ -212,20 +213,21 @@ from vllm.platforms import PlatformEnum, current_platform
 logger = init_logger(__name__)
 
 
-def _get_linear_backend() -> str:
-    """Get the linear_backend setting from the current vllm config."""
+def _get_linear_backend(quantization: LinearQuantization | None = None) -> str:
+    """Get the configured linear backend, optionally for a quantization scheme."""
     from vllm.config import get_current_vllm_config_or_none
 
     config = get_current_vllm_config_or_none()
     if config is not None:
+        if quantization is not None:
+            return config.kernel_config.get_linear_backend(quantization)
         return config.kernel_config.linear_backend
     return "auto"
 
 
-# Mapping from linear_backend name to the set of kernel classes it covers.
-# When a user sets --linear-backend <name>, only kernels in the corresponding
-# set are considered candidates. If none can implement the layer config,
-# an error is raised to respect the user's explicit intent.
+# Mapping from linear backend names to the kernel classes they cover. When an
+# explicit backend is configured, only matching kernels are considered. If none
+# can implement the layer config, an error is raised to respect the user's intent.
 _LINEAR_BACKEND_KERNEL_MAP: dict[str, set[type]] = {
     "cutlass": {
         CutlassInt8ScaledMMLinearKernel,
@@ -466,7 +468,7 @@ _POSSIBLE_NVFP4_KERNELS: dict[PlatformEnum, list[type[NvFp4LinearKernel]]] = {
         FlashInferCuteDslNvFp4LinearKernel,
         # FlashInferB12xNvFp4LinearKernel excluded from auto-selection until
         # upstream CUTLASS SM121 MMA op guard is resolved; use
-        # --linear-backend flashinfer_b12x to opt in explicitly.
+        # an explicit flashinfer_b12x backend selection to opt in.
         FlashInferCutlassNvFp4LinearKernel,
         CutlassNvFp4LinearKernel,
         MarlinNvFp4LinearKernel,
@@ -542,6 +544,7 @@ def choose_scaled_mm_linear_kernel(
     possible_kernels: dict[PlatformEnum, list[type[_KernelT]]],
     compute_capability: int | None = None,
     force_kernel: type[_KernelT] | None = None,
+    quantization: LinearQuantization | None = None,
 ) -> type[_KernelT]:
     """
     Choose a _KernelT that can implement the given config for the
@@ -559,6 +562,8 @@ def choose_scaled_mm_linear_kernel(
         force_kernel (Optional[type[_KernelT]]): An Optional forced kernel to override
             the possible_kernels if it can be implemented. If None, it will only try the
             possible kernels.
+        quantization: Quantization scheme used to resolve a per-quantization
+            backend override.
 
     Raises:
         ValueError: If no kernel can implement the given config.
@@ -584,14 +589,14 @@ def choose_scaled_mm_linear_kernel(
 
     platform_kernels = possible_kernels.get(current_platform._enum, [])
 
-    # Apply --linear-backend filtering when set.
-    linear_backend = _get_linear_backend()
+    # Apply explicit backend filtering when configured.
+    linear_backend = _get_linear_backend(quantization)
     if linear_backend != "auto":
         filtered = _filter_kernels_by_backend(linear_backend, platform_kernels)
         if not filtered:
             raise ValueError(
-                f"--linear-backend={linear_backend} was requested but no "
-                f"'{linear_backend}' kernel exists for this layer type."
+                f"Linear backend '{linear_backend}' was requested but no "
+                "matching kernel exists for this layer type."
             )
         platform_kernels = filtered
 
@@ -631,6 +636,7 @@ def init_fp8_linear_kernel(
             config=scaled_mm_linear_kernel_config,
             possible_kernels=_POSSIBLE_FP8_BLOCK_KERNELS,  # type: ignore[misc]
             force_kernel=force_kernel,
+            quantization="fp8_block",
         )
         if module_name:
             logger.info_once(
@@ -662,6 +668,7 @@ def init_fp8_linear_kernel(
             config=scaled_mm_linear_kernel_config,
             possible_kernels=_POSSIBLE_FP8_KERNELS,  # type: ignore[arg-type]
             force_kernel=force_kernel,
+            quantization="fp8",
         )
         if module_name:
             logger.info_once(
@@ -697,6 +704,7 @@ def init_int8_linear_kernel(
     kernel_type = choose_scaled_mm_linear_kernel(
         config,
         _POSSIBLE_INT8_KERNELS,
+        quantization="int8",
     )
 
     logger.info_once(
@@ -719,7 +727,9 @@ def init_int8_linear_kernel(
 
 
 def choose_mp_linear_kernel(
-    config: MPLinearLayerConfig, compute_capability: int | None = None
+    config: MPLinearLayerConfig,
+    compute_capability: int | None = None,
+    quantization: LinearQuantization = "wna16",
 ) -> type[MPLinearKernel]:
     """
     Choose an MPLinearKernel that can implement the given config for the given
@@ -732,6 +742,8 @@ def choose_mp_linear_kernel(
         compute_capability (Optional[int], optional): The compute capability of
             the target device, if None uses `current_platform` to get
             the compute capability. Defaults to None.
+        quantization: Quantization scheme used to resolve a per-quantization
+            backend override.
 
     Raises:
         ValueError: If no kernel can implement the given config.
@@ -748,14 +760,14 @@ def choose_mp_linear_kernel(
 
     platform_kernels = _POSSIBLE_KERNELS.get(current_platform._enum, [])
 
-    # Apply --linear-backend filtering when set.
-    linear_backend = _get_linear_backend()
+    # Apply explicit backend filtering when configured.
+    linear_backend = _get_linear_backend(quantization)
     if linear_backend != "auto":
         filtered = _filter_kernels_by_backend(linear_backend, platform_kernels)
         if not filtered:
             raise ValueError(
-                f"--linear-backend={linear_backend} was requested but no "
-                f"'{linear_backend}' kernel exists for mixed-precision layers."
+                f"Linear backend '{linear_backend}' was requested but no matching "
+                "kernel exists for mixed-precision layers."
             )
         platform_kernels = filtered
 
@@ -787,7 +799,7 @@ def choose_mp_linear_kernel(
 
     raise ValueError(
         "Failed to find a kernel that can implement the "
-        "WNA16 linear layer. Reasons: \n" + "\n".join(failure_reasons)
+        "mixed-precision linear layer. Reasons: \n" + "\n".join(failure_reasons)
     )
 
 
@@ -799,14 +811,14 @@ def init_mxfp8_linear_kernel() -> Mxfp8LinearKernel:
     platform = current_platform._enum
     possible = list(_POSSIBLE_MXFP8_KERNELS.get(platform, []))
 
-    # Apply --linear-backend filtering when set.
-    linear_backend = _get_linear_backend()
+    # Apply explicit backend filtering when configured.
+    linear_backend = _get_linear_backend("mxfp8")
     if linear_backend != "auto":
         filtered = _filter_kernels_by_backend(linear_backend, possible)
         if not filtered:
             raise ValueError(
-                f"--linear-backend={linear_backend} was requested but no "
-                f"'{linear_backend}' kernel exists for MXFP8 layers."
+                f"Linear backend '{linear_backend}' was requested but no "
+                "matching kernel exists for MXFP8 layers."
             )
         possible = filtered
 
@@ -846,18 +858,18 @@ def init_mxfp4_linear_kernel(
         activation_quant_key=activation_quant_key,
     )
 
-    linear_backend = _get_linear_backend()
+    linear_backend = _get_linear_backend("mxfp4")
 
     platform = current_platform._enum
     possible = list(_POSSIBLE_MXFP4_KERNELS.get(platform, []))
 
-    # Apply --linear-backend filtering when set.
+    # Apply explicit backend filtering when configured.
     if linear_backend != "auto":
         filtered = _filter_kernels_by_backend(linear_backend, possible)
         if not filtered:
             raise ValueError(
-                f"--linear-backend={linear_backend} was requested but no "
-                f"'{linear_backend}' kernel exists for MXFP4 layers."
+                f"Linear backend '{linear_backend}' was requested but no "
+                "matching kernel exists for MXFP4 layers."
             )
         possible = filtered
 
@@ -899,18 +911,18 @@ def init_mxfp6_linear_kernel(
         activation_quant_key=activation_quant_key,
     )
 
-    linear_backend = _get_linear_backend()
+    linear_backend = _get_linear_backend("mxfp6")
 
     platform = current_platform._enum
     possible = list(_POSSIBLE_MXFP6_KERNELS.get(platform, []))
 
-    # Apply --linear-backend filtering when set.
+    # Apply explicit backend filtering when configured.
     if linear_backend != "auto":
         filtered = _filter_kernels_by_backend(linear_backend, possible)
         if not filtered:
             raise ValueError(
-                f"--linear-backend={linear_backend} was requested but no "
-                f"'{linear_backend}' kernel exists for MXFP6 layers."
+                f"Linear backend '{linear_backend}' was requested but no "
+                "matching kernel exists for MXFP6 layers."
             )
         possible = filtered
 
@@ -959,7 +971,10 @@ def init_wfp8_a16_linear_kernel(
     )
 
     kernel_type = choose_scaled_mm_linear_kernel(
-        config, _POSSIBLE_WFP8A16_KERNELS, force_kernel=force_kernel
+        config,
+        _POSSIBLE_WFP8A16_KERNELS,
+        force_kernel=force_kernel,
+        quantization="w8a16_fp8",
     )
 
     if module_name:
@@ -984,15 +999,16 @@ def init_nvfp4_linear_kernel(use_a16: bool = False) -> NvFp4LinearKernel:
 
     # VLLM_BATCH_INVARIANT forces deterministic execution. Prefer the
     # batch-invariant CUTLASS implementation when available, otherwise fall
-    # back to emulation. It overrides --linear-backend.
+    # back to emulation. It overrides the configured linear backend.
     force_kernel: type[NvFp4LinearKernel] | None = None
-    linear_backend = _get_linear_backend()
+    quantization: LinearQuantization = "nvfp4_w4a16" if use_a16 else "nvfp4"
+    linear_backend = _get_linear_backend(quantization)
     if envs.VLLM_BATCH_INVARIANT:
         bi_supported, reason = CutlassNvFp4LinearKernel.is_supported()
         if bi_supported:
             if linear_backend not in ("auto", "cutlass"):
                 logger.warning_once(
-                    "VLLM_BATCH_INVARIANT overrides --linear-backend=%s; "
+                    "VLLM_BATCH_INVARIANT overrides linear backend '%s'; "
                     "using the CUTLASS backend for deterministic execution.",
                     linear_backend,
                 )
@@ -1005,7 +1021,7 @@ def init_nvfp4_linear_kernel(use_a16: bool = False) -> NvFp4LinearKernel:
         else:
             if linear_backend not in ("auto", "emulation"):
                 logger.warning_once(
-                    "VLLM_BATCH_INVARIANT overrides --linear-backend=%s; "
+                    "VLLM_BATCH_INVARIANT overrides linear backend '%s'; "
                     "using the emulation backend for deterministic execution.",
                     linear_backend,
                 )
@@ -1032,19 +1048,18 @@ def init_nvfp4_linear_kernel(use_a16: bool = False) -> NvFp4LinearKernel:
         logger.info_once("Using %s for NVFP4 GEMM", force_kernel.__name__)
         return force_kernel(config)
 
-    # Auto-select from registry (or --linear-backend filtered).
     platform = current_platform._enum
     possible = list(_POSSIBLE_NVFP4_KERNELS.get(platform, []))
     if use_a16:
         possible = [kernel for kernel in possible if kernel in a16_kernels]
 
-    # Apply --linear-backend filtering when set.
+    # Apply explicit backend filtering when configured.
     if linear_backend != "auto":
         filtered = _filter_kernels_by_backend(linear_backend, possible)
         if not filtered:
             raise ValueError(
-                f"--linear-backend={linear_backend} was requested but no "
-                f"'{linear_backend}' kernel exists for NVFP4 layers."
+                f"Linear backend '{linear_backend}' was requested but no "
+                "matching kernel exists for NVFP4 layers."
             )
         possible = filtered
 

@@ -1256,10 +1256,8 @@ class ModelOptNvFp4W4A16LinearMethod(LinearMethodBase):
     def __init__(self, quant_config: ModelOptNvFp4Config) -> None:
         self.quant_config = quant_config
         self.marlin_input_dtype = None
-        # `init_nvfp4_linear_kernel(use_a16=True)` is best of both worlds:
-        # 1. `use_a16=True` forces  `Marlin`: https://github.com/vllm-project/vllm/commit/e68988a#diff-7135ab92aa94dfacb1ad3c77fc13f9c4ffe0b977f8eac5d86c2afe243e5f92a6R842-R889
-        # for `--linear-backend=auto`, avoiding a W4A4 kernel that requires input_scale.
-        # 2. Specifying e.g. `--linear-backend=humming` will override.
+        # Restrict candidates to W4A16 kernels, defaulting to Marlin when the
+        # effective backend is auto. An explicit backend selection can override it.
         self.kernel = init_nvfp4_linear_kernel(use_a16=True)
 
     def create_weights(

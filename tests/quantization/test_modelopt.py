@@ -500,13 +500,21 @@ def test_modelopt_nvfp4_config_dispatches_w4a16_method():
 
 
 @pytest.mark.parametrize(
-    ("linear_backend", "kernel_cls"),
-    [("auto", MarlinNvFp4LinearKernel), ("humming", HummingNvFp4LinearKernel)],
+    ("linear_backend", "linear_backend_per_quant", "kernel_cls"),
+    [
+        ("auto", {}, MarlinNvFp4LinearKernel),
+        ("humming", {}, HummingNvFp4LinearKernel),
+        ("auto", {"nvfp4_w4a16": "humming"}, HummingNvFp4LinearKernel),
+        ("humming", {"nvfp4_w4a16": "auto"}, MarlinNvFp4LinearKernel),
+    ],
 )
 @pytest.mark.skipif(not current_platform.is_cuda(), reason="CUDA only")
-def test_modelopt_w4a16_respects_linear_backend(linear_backend, kernel_cls):
+def test_modelopt_w4a16_respects_linear_backend(
+    linear_backend, linear_backend_per_quant, kernel_cls
+):
     vllm_config = VllmConfig()
     vllm_config.kernel_config.linear_backend = linear_backend
+    vllm_config.kernel_config.linear_backend_per_quant = linear_backend_per_quant
     with set_current_vllm_config(vllm_config):
         method = ModelOptNvFp4W4A16LinearMethod(
             ModelOptNvFp4Config(quant_method="W4A16_NVFP4")

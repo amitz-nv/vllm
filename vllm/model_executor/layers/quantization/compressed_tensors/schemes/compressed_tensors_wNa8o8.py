@@ -116,7 +116,7 @@ class CompressedTensorsWNA8O8Int(CompressedTensorsScheme):
             zero_points=False,
             has_g_idx=False,
         )
-        self.kernel = choose_mp_linear_kernel(mp_config)(
+        self.kernel = choose_mp_linear_kernel(mp_config, quantization="wna8o8")(
             mp_config,
             w_q_param_name="weight_packed",
             w_s_param_name="weight_scale",

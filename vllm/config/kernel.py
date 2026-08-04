@@ -162,6 +162,24 @@ LinearBackend = Literal[
     "xpu_woq",
 ]
 
+LinearQuantization = Literal[
+    "fp8",
+    "fp8_block",
+    "int8",
+    "mxfp4",
+    "mxfp6",
+    "mxfp8",
+    "nvfp4",
+    "nvfp4_w4a16",
+    "w4a8_fp8",
+    "w4a8_int",
+    "w8a16_fp8",
+    "wna4",
+    "wna8",
+    "wna8o8",
+    "wna16",
+]
+
 
 @config
 class KernelConfig:
@@ -237,6 +255,21 @@ class KernelConfig:
     - "xpu_woq": Use XPU kernels for weight-only quantization (e.g. W8A16)
     """
 
+    linear_backend_per_quant: dict[LinearQuantization, LinearBackend] = Field(
+        default_factory=dict
+    )
+    """Per-quantization overrides for ``linear_backend``.
+
+    Keys identify a linear quantization scheme, such as ``fp8`` or
+    ``nvfp4_w4a16``. Values use the same backend names as ``linear_backend``.
+    Quantizations not present in this mapping fall back to ``linear_backend``.
+    Supported keys are defined by ``LinearQuantization``.
+    """
+
+    def get_linear_backend(self, quantization: LinearQuantization) -> LinearBackend:
+        """Resolve the linear backend for a quantization scheme."""
+        return self.linear_backend_per_quant.get(quantization, self.linear_backend)
+
     @field_validator("moe_backend", mode="before")
     @classmethod
     def _normalize_moe_backend(cls, value: Any) -> Any:
@@ -250,6 +283,18 @@ class KernelConfig:
         if isinstance(value, str):
             return value.lower().replace("-", "_")
         return value
+
+    @field_validator("linear_backend_per_quant", mode="before")
+    @classmethod
+    def _normalize_linear_backend_per_quant(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        normalized = {}
+        for key, backend in value.items():
+            if isinstance(key, str):
+                key = key.lower().replace("-", "_")
+            normalized[key] = cls._normalize_linear_backend(backend)
+        return normalized
 
     def compute_hash(self) -> str:
         """

@@ -7,7 +7,7 @@ from contextlib import AbstractContextManager, nullcontext
 from typing import Annotated, Literal
 
 import pytest
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from vllm.config import AttentionConfig, CompilationConfig, ModelConfig, config
 from vllm.engine.arg_utils import (
@@ -637,6 +637,30 @@ def test_ir_op_priority():
             ir_op_priority=ir_op_priority,
             kernel_config=KernelConfig(ir_op_priority=ir_op_priority),
         ).create_engine_config()
+
+
+def test_linear_backend_per_quant_cli():
+    parser = EngineArgs.add_cli_args(FlexibleArgumentParser())
+    args = parser.parse_args(
+        [
+            "--linear-backend",
+            "marlin",
+            "--linear-backend-per-quant",
+            '{"NVFP4-W4A16":"HUMMING","FP8":"AUTO"}',
+        ]
+    )
+    engine_args = EngineArgs.from_cli_args(args=args)
+    kernel_config = engine_args.create_engine_config().kernel_config
+
+    assert engine_args.linear_backend == "marlin"
+    assert kernel_config.linear_backend_per_quant == {
+        "nvfp4_w4a16": "humming",
+        "fp8": "auto",
+    }
+
+    engine_args.linear_backend_per_quant = {"unknown_quantization": "humming"}
+    with pytest.raises(ValidationError, match="unknown_quantization"):
+        engine_args.create_engine_config()
 
 
 @pytest.mark.parametrize(

@@ -1515,6 +1515,23 @@ def test_fusion_pass_op_priority():
     assert cfg4.compilation_config.pass_config.fuse_norm_quant
 
 
+def test_linear_backend_per_quant_validation():
+    config = KernelConfig(
+        linear_backend="marlin",
+        linear_backend_per_quant={"NVFP4-W4A16": "HUMMING"},
+    )
+    assert config.linear_backend_per_quant == {"nvfp4_w4a16": "humming"}
+    assert config.get_linear_backend("nvfp4_w4a16") == "humming"
+    assert config.get_linear_backend("fp8") == "marlin"
+    assert config.compute_hash() != KernelConfig(linear_backend="marlin").compute_hash()
+
+    with pytest.raises(ValidationError, match="unknown_quantization"):
+        KernelConfig(linear_backend_per_quant={"unknown_quantization": "humming"})
+
+    with pytest.raises(ValidationError, match="unknown_backend"):
+        KernelConfig(linear_backend_per_quant={"fp8": "unknown_backend"})
+
+
 def test_scheduler_config_init():
     with pytest.raises(ValidationError):
         # Positional InitVars missing

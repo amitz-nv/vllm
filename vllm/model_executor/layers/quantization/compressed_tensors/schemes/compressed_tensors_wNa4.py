@@ -147,7 +147,7 @@ class CompressedTensorsWNA4Int(CompressedTensorsScheme):
             has_g_idx=False,
         )
 
-        kernel_type = choose_mp_linear_kernel(mp_config)
+        kernel_type = choose_mp_linear_kernel(mp_config, quantization="wna4")
         if kernel_type.__name__ not in self._kernel_backends_being_used:
             logger.info("Using %s for CompressedTensorsWNA4Int", kernel_type.__name__)
             self._kernel_backends_being_used.add(kernel_type.__name__)

@@ -102,7 +102,9 @@ class CompressedTensorsW4A8Int(CompressedTensorsScheme):
             has_g_idx=False,
         )
 
-        kernel_type = choose_mp_linear_kernel(mp_linear_kernel_config)
+        kernel_type = choose_mp_linear_kernel(
+            mp_linear_kernel_config, quantization="w4a8_int"
+        )
         if kernel_type.__name__ not in self._kernel_backends_being_used:
             logger.info("Using %s for CompressedTensorsW4A8Int", kernel_type.__name__)
             self._kernel_backends_being_used.add(kernel_type.__name__)

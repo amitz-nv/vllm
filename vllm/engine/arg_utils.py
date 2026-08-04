@@ -74,7 +74,12 @@ from vllm.config.cache import (
     PrefixCachingHashAlgo,
 )
 from vllm.config.device import Device
-from vllm.config.kernel import IrOpPriorityConfig, LinearBackend, MoEBackend
+from vllm.config.kernel import (
+    IrOpPriorityConfig,
+    LinearBackend,
+    LinearQuantization,
+    MoEBackend,
+)
 from vllm.config.load import SafetensorsLoadStrategy
 from vllm.config.lora import MaxLoRARanks
 from vllm.config.mamba import MambaBackendEnum
@@ -101,7 +106,7 @@ from vllm.config.parallel import (
     ExpertPlacementStrategy,
 )
 from vllm.config.scheduler import SchedulerPolicy
-from vllm.config.utils import get_field
+from vllm.config.utils import get_field, replace
 from vllm.config.vllm import OptimizationLevel, PerformanceMode
 from vllm.logger import init_logger, suppress_logging
 from vllm.platforms import CpuArchEnum, current_platform
@@ -495,6 +500,9 @@ class EngineArgs:
     enable_ep_weight_filter: bool = ParallelConfig.enable_ep_weight_filter
     moe_backend: MoEBackend = KernelConfig.moe_backend
     linear_backend: LinearBackend = KernelConfig.linear_backend
+    linear_backend_per_quant: dict[LinearQuantization, LinearBackend] = get_field(
+        KernelConfig, "linear_backend_per_quant"
+    )
     all2all_backend: All2AllBackend = ParallelConfig.all2all_backend
     enable_elastic_ep: bool = ParallelConfig.enable_elastic_ep
     enable_dbo: bool = ParallelConfig.enable_dbo
@@ -1555,6 +1563,10 @@ class EngineArgs:
         linear_backend_kwargs = kernel_kwargs["linear_backend"]
         linear_backend_kwargs["type"] = lambda s: s.lower().replace("-", "_")
         kernel_group.add_argument("--linear-backend", **linear_backend_kwargs)
+        kernel_group.add_argument(
+            "--linear-backend-per-quant",
+            **kernel_kwargs["linear_backend_per_quant"],
+        )
 
         # vLLM arguments
         vllm_kwargs = get_kwargs(VllmConfig)
@@ -2381,6 +2393,11 @@ class EngineArgs:
             kernel_config.moe_backend = self.moe_backend
         if self.linear_backend != "auto":
             kernel_config.linear_backend = self.linear_backend
+        if self.linear_backend_per_quant:
+            kernel_config = replace(
+                kernel_config,
+                linear_backend_per_quant=self.linear_backend_per_quant,
+            )
 
         # Transfer top-level ir_op_priority into KernelConfig.ir_op_priority
         for op_name, op_priority in asdict(self.ir_op_priority).items():
